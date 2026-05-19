@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { api } from "../api";
 import { Spinner, Modal, Field, StatusBadge } from "../components";
 
@@ -14,22 +14,22 @@ export default function Billing() {
   const [submitting, setSubmitting] = useState(false);
   const [success, setSuccess] = useState("");
 
-  const fetchSales = () => {
+  const fetchSales = useCallback(() => {
     setLoading(true);
     api.billing.list()
       .then(res => setSales(res.data || []))
       .catch(console.error)
       .finally(() => setLoading(false));
-  };
+  }, []);
 
-  const fetchMeds = () => {
+  const fetchMeds = useCallback(() => {
     api.inventory.list({ limit: 100 }).then(res => setMedicines(res.data || []));
-  };
+  }, []);
 
   useEffect(() => {
     fetchSales();
     fetchMeds();
-  }, []);
+  }, [fetchSales, fetchMeds]);
 
   const addItem = (med) => {
     setForm(prev => {

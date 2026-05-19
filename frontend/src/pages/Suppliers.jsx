@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { api } from "../api";
-import { Spinner, Modal, Field, StatusBadge } from "../components";
+import { Spinner, Modal, Field } from "../components";
 
 export default function Suppliers() {
   const [suppliers, setSuppliers] = useState([]);
@@ -9,17 +9,17 @@ export default function Suppliers() {
   const [formData, setFormData] = useState({});
   const [error, setError] = useState("");
 
-  const fetchSuppliers = () => {
+  const fetchSuppliers = useCallback(() => {
     setLoading(true);
     api.suppliers.list()
       .then(res => setSuppliers(res.data || []))
       .catch(console.error)
       .finally(() => setLoading(false));
-  };
+  }, []);
 
   useEffect(() => {
     fetchSuppliers();
-  }, []);
+  }, [fetchSuppliers]);
 
   const handleSave = async () => {
     try {
