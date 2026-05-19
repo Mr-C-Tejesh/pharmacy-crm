@@ -1,4 +1,5 @@
-import React, { useState } from "react";
+import React from "react";
+import { BrowserRouter as Router, Routes, Route, Link, useLocation } from "react-router-dom";
 import Dashboard from "./pages/Dashboard";
 import Inventory from "./pages/Inventory";
 import Billing from "./pages/Billing";
@@ -7,25 +8,25 @@ import "./styles.css";
 
 const NAV = [
   {
-    id: "dashboard", label: "Dashboard",
+    path: "/", label: "Dashboard",
     icon: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
   },
   {
-    id: "inventory", label: "Inventory",
+    path: "/inventory", label: "Inventory",
     icon: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
   },
   {
-    id: "billing", label: "Billing",
+    path: "/billing", label: "Billing",
     icon: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>
   },
   {
-    id: "suppliers", label: "Suppliers",
+    path: "/suppliers", label: "Suppliers",
     icon: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
   }
 ];
 
-export default function App() {
-  const [page, setPage] = useState("dashboard");
+function AppContent() {
+  const location = useLocation();
 
   return (
     <div className="app">
@@ -39,15 +40,16 @@ export default function App() {
 
         <nav className="sidebar-nav">
           {NAV.map(n => (
-            <button
-              key={n.id}
-              className={`nav-item ${page === n.id ? "nav-item-active" : ""}`}
-              onClick={() => setPage(n.id)}
+            <Link
+              key={n.path}
+              to={n.path}
+              className={`nav-item ${location.pathname === n.path ? "nav-item-active" : ""}`}
               title={n.label}
+              style={{ textDecoration: 'none' }}
             >
               {n.icon}
               <span className="nav-label">{n.label}</span>
-            </button>
+            </Link>
           ))}
         </nav>
 
@@ -60,11 +62,21 @@ export default function App() {
 
       {/* Main */}
       <main className="main">
-        {page === "dashboard" && <Dashboard />}
-        {page === "inventory" && <Inventory />}
-        {page === "billing" && <Billing />}
-        {page === "suppliers" && <Suppliers />}
+        <Routes>
+          <Route path="/" element={<Dashboard />} />
+          <Route path="/inventory" element={<Inventory />} />
+          <Route path="/billing" element={<Billing />} />
+          <Route path="/suppliers" element={<Suppliers />} />
+        </Routes>
       </main>
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <Router>
+      <AppContent />
+    </Router>
   );
 }
