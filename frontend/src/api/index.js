@@ -36,9 +36,23 @@ export const api = {
       return request(`/inventory/?${params.toString()}`);
     },
     get:    (id)       => request(`/inventory/${id}`),
-    create: (data)     => request("/inventory", { method: "POST", body: JSON.stringify(data) }),
+    create: (data)     => request("/inventory/", { method: "POST", body: JSON.stringify(data) }),
     update: (id, data) => request(`/inventory/${id}`, { method: "PUT",   body: JSON.stringify(data) }),
     updateStatus: (id, status) =>
       request(`/inventory/${id}/status`, { method: "PATCH", body: JSON.stringify({ status }) }),
   },
+  billing: {
+    list: ({ page = 1, limit = 10 } = {}) => request(`/billing/?page=${page}&limit=${limit}`),
+    createSale: (data) => request("/billing/", { method: "POST", body: JSON.stringify(data) }),
+  },
+  suppliers: {
+    list: ({ search = "", page = 1, limit = 10 } = {}) => {
+      const params = new URLSearchParams();
+      if (search) params.append("search", search);
+      params.append("page", page);
+      params.append("limit", limit);
+      return request(`/suppliers/?${params.toString()}`);
+    },
+    create: (data) => request("/suppliers/", { method: "POST", body: JSON.stringify(data) }),
+  }
 };

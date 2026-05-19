@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .database import engine
 from . import models
-from .routers import inventory, dashboard
+from .routers import inventory_router, dashboard_router, billing_router, suppliers_router
 from .seed import seed
 
 # create all tables
@@ -23,8 +23,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(inventory.router)
-app.include_router(dashboard.router)
+app.include_router(inventory_router)
+app.include_router(dashboard_router)
+app.include_router(billing_router)
+app.include_router(suppliers_router)
 
 
 @app.on_event("startup")

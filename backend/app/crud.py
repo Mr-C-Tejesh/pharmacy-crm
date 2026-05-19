@@ -1,21 +1,18 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from fastapi import HTTPException
-from datetime import date, datetime
+from datetime import date, datetime, timezone, timedelta
 from . import models, schemas
-from datetime import datetime, timezone, timedelta
+import uuid
+
 IST = timezone(timedelta(hours=5, minutes=30))
 def ist_now():
     return datetime.now(IST).replace(tzinfo=None)
 
 
 # ── Status Logic ─────────────────────────────────────────────────────────────
-# Single source of truth for status calculation.
-# Called on every read so status is always accurate regardless of when
-# the medicine was added or last edited.
 
 def calculate_status(quantity: int, expiry_date: date) -> str:
-    # check expiry first — an expired medicine is expired even if qty > 0
     if expiry_date <= date.today():
         return "Expired"
     if quantity == 0:
@@ -24,24 +21,49 @@ def calculate_status(quantity: int, expiry_date: date) -> str:
         return "Low Stock"
     return "Active"
 
-
 def days_until_expiry(expiry_date: date) -> int:
-    # negative means already expired
     return (expiry_date - date.today()).days
 
-
 def sync_medicine_status(db: Session, med: models.Medicine) -> models.Medicine:
-    """
-    Recalculate and persist status for a single medicine.
-    Called on every read — this is how we keep status always accurate
-    without needing a scheduled job.
-    """
     correct_status = calculate_status(med.quantity, med.expiry_date)
     if med.status != correct_status:
         med.status = correct_status
         db.commit()
         db.refresh(med)
     return med
+
+
+# ── Supplier CRUD ─────────────────────────────────────────────────────────────
+
+def get_suppliers(db: Session, search: str = None, page: int = 1, limit: int = 10) -> dict:
+    query = db.query(models.Supplier)
+    if search:
+        term = f"%{search.strip()}%"
+        query = query.filter(
+            models.Supplier.name.ilike(term) |
+            models.Supplier.contact_person.ilike(term)
+        )
+    total = query.count()
+    total_pages = (total + limit - 1) // limit
+    offset = (page - 1) * limit
+    suppliers = query.order_by(models.Supplier.name).offset(offset).limit(limit).all()
+    
+    return {
+        "data": suppliers,
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "total_pages": total_pages,
+        "has_next": page < total_pages,
+        "has_prev": page > 1,
+    }
+
+def create_supplier(db: Session, supplier: schemas.SupplierCreate) -> models.Supplier:
+    db_supplier = models.Supplier(**supplier.dict())
+    db.add(db_supplier)
+    db.commit()
+    db.refresh(db_supplier)
+    return db_supplier
 
 
 # ── Medicine CRUD ─────────────────────────────────────────────────────────────
@@ -51,26 +73,12 @@ def get_medicine_by_id(db: Session, medicine_id: int) -> models.Medicine:
     if not med:
         raise HTTPException(
             status_code=404,
-            detail={
-                "error": "Medicine not found",
-                "medicine_id": medicine_id,
-                "timestamp": ist_now().isoformat()
-            }
+            detail={"error": "Medicine not found", "medicine_id": medicine_id}
         )
     return med
 
-
-def get_medicines(
-    db: Session,
-    search: str = None,
-    status: str = None,
-    page: int = 1,
-    limit: int = 10
-) -> dict:
-
+def get_medicines(db: Session, search: str = None, status: str = None, page: int = 1, limit: int = 10) -> dict:
     query = db.query(models.Medicine)
-
-    # case-insensitive search across name, generic_name, batch_no, supplier
     if search:
         term = f"%{search.strip()}%"
         query = query.filter(
@@ -79,18 +87,14 @@ def get_medicines(
             models.Medicine.batch_no.ilike(term)     |
             models.Medicine.supplier.ilike(term)
         )
-
     if status:
         query = query.filter(models.Medicine.status == status)
 
     total = query.count()
-    total_pages = (total + limit - 1) // limit  # ceiling division
-
+    total_pages = (total + limit - 1) // limit
     offset = (page - 1) * limit
     medicines = query.order_by(models.Medicine.name).offset(offset).limit(limit).all()
 
-    # recalculate status for every medicine on every fetch
-    # this ensures expiry-based status is always up to date
     for med in medicines:
         sync_medicine_status(db, med)
 
@@ -104,27 +108,23 @@ def get_medicines(
         "has_prev":    page > 1,
     }
 
-
 def create_medicine(db: Session, medicine: schemas.MedicineCreate) -> models.Medicine:
-
-    # check for duplicate batch number before inserting
-    existing = db.query(models.Medicine).filter(
-        models.Medicine.batch_no == medicine.batch_no
-    ).first()
+    existing = db.query(models.Medicine).filter(models.Medicine.batch_no == medicine.batch_no).first()
     if existing:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error": "Batch number already exists",
-                "batch_no": medicine.batch_no,
-                "timestamp": ist_now().isoformat()
-            }
-        )
+        raise HTTPException(status_code=400, detail={"error": "Batch number already exists"})
 
     data = medicine.dict()
-
-    # status is always computed — user never sets it
     data["status"] = calculate_status(data["quantity"], data["expiry_date"])
+
+    # If supplier string is provided, try to link or create supplier
+    if data.get("supplier") and not data.get("supplier_id"):
+        supplier_name = data["supplier"]
+        sup = db.query(models.Supplier).filter(models.Supplier.name == supplier_name).first()
+        if not sup:
+            sup = models.Supplier(name=supplier_name)
+            db.add(sup)
+            db.flush()
+        data["supplier_id"] = sup.id
 
     db_medicine = models.Medicine(**data)
     db.add(db_medicine)
@@ -132,38 +132,30 @@ def create_medicine(db: Session, medicine: schemas.MedicineCreate) -> models.Med
     db.refresh(db_medicine)
     return db_medicine
 
-
-def update_medicine(
-    db: Session,
-    medicine_id: int,
-    medicine: schemas.MedicineUpdate
-) -> models.Medicine:
-
+def update_medicine(db: Session, medicine_id: int, medicine: schemas.MedicineUpdate) -> models.Medicine:
     db_medicine = get_medicine_by_id(db, medicine_id)
-
-    # only update fields that were actually sent
     update_data = medicine.dict(exclude_unset=True)
 
-    # if batch_no is being changed, check it's not taken by another medicine
     if "batch_no" in update_data:
         conflict = db.query(models.Medicine).filter(
             models.Medicine.batch_no == update_data["batch_no"],
             models.Medicine.id != medicine_id
         ).first()
         if conflict:
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "error": "Batch number already in use by another medicine",
-                    "batch_no": update_data["batch_no"],
-                    "timestamp": ist_now().isoformat()
-                }
-            )
+            raise HTTPException(status_code=400, detail={"error": "Batch number already in use"})
+
+    if "supplier" in update_data and not update_data.get("supplier_id"):
+        supplier_name = update_data["supplier"]
+        sup = db.query(models.Supplier).filter(models.Supplier.name == supplier_name).first()
+        if not sup:
+            sup = models.Supplier(name=supplier_name)
+            db.add(sup)
+            db.flush()
+        update_data["supplier_id"] = sup.id
 
     for key, value in update_data.items():
         setattr(db_medicine, key, value)
 
-    # recalculate status after update
     db_medicine.status = calculate_status(db_medicine.quantity, db_medicine.expiry_date)
     db_medicine.updated_at = ist_now()
 
@@ -171,12 +163,7 @@ def update_medicine(
     db.refresh(db_medicine)
     return db_medicine
 
-
-def update_medicine_status(
-    db: Session,
-    medicine_id: int,
-    new_status: str
-) -> models.Medicine:
+def update_medicine_status(db: Session, medicine_id: int, new_status: str) -> models.Medicine:
     db_medicine = get_medicine_by_id(db, medicine_id)
     db_medicine.status = new_status
     db_medicine.updated_at = ist_now()
@@ -185,22 +172,95 @@ def update_medicine_status(
     return db_medicine
 
 
+# ── Sales and Billing CRUD ─────────────────────────────────────────────────────────────
+
+def create_sale(db: Session, sale: schemas.SaleCreate) -> models.Sale:
+    total_amount = 0.0
+    db_items = []
+    
+    for item in sale.items:
+        med = get_medicine_by_id(db, item.medicine_id)
+        if med.quantity < item.quantity:
+            raise HTTPException(status_code=400, detail=f"Not enough stock for medicine {med.name}")
+        
+        # Deduct quantity
+        med.quantity -= item.quantity
+        sync_medicine_status(db, med)
+
+        unit_price = med.price
+        total_amount += unit_price * item.quantity
+        db_items.append({
+            "medicine_id": med.id,
+            "quantity": item.quantity,
+            "unit_price": unit_price
+        })
+    
+    invoice_no = f"INV-{ist_now().strftime('%Y%m%d')}-{str(uuid.uuid4())[:6].upper()}"
+    
+    db_sale = models.Sale(
+        invoice_no=invoice_no,
+        patient_name=sale.patient_name,
+        payment_mode=sale.payment_mode,
+        total_amount=total_amount,
+        status="Completed",
+        created_at=ist_now()
+    )
+    db.add(db_sale)
+    db.flush()
+
+    for item_data in db_items:
+        db_sale_item = models.SaleItem(
+            sale_id=db_sale.id,
+            medicine_id=item_data["medicine_id"],
+            quantity=item_data["quantity"],
+            unit_price=item_data["unit_price"]
+        )
+        db.add(db_sale_item)
+    
+    # Create Payment
+    db_payment = models.Payment(
+        sale_id=db_sale.id,
+        amount=total_amount,
+        payment_method=sale.payment_mode,
+        status="Completed"
+    )
+    db.add(db_payment)
+
+    db.commit()
+    db.refresh(db_sale)
+    return db_sale
+
+def get_sales(db: Session, page: int = 1, limit: int = 10) -> dict:
+    query = db.query(models.Sale)
+    total = query.count()
+    total_pages = (total + limit - 1) // limit
+    offset = (page - 1) * limit
+    sales = query.order_by(models.Sale.created_at.desc()).offset(offset).limit(limit).all()
+    
+    # ensure items and payment are loaded or mapped
+    return {
+        "data": sales,
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "total_pages": total_pages,
+        "has_next": page < total_pages,
+        "has_prev": page > 1,
+    }
+
+
 # ── Dashboard Queries ─────────────────────────────────────────────────────────
 
 def get_dashboard_summary(db: Session) -> dict:
-
-    # sync all medicine statuses before computing summary
     all_medicines = db.query(models.Medicine).all()
     for med in all_medicines:
         sync_medicine_status(db, med)
 
     total_items = len(all_medicines)
-
     low_stock   = sum(1 for m in all_medicines if m.status == "Low Stock")
     out_of_stock = sum(1 for m in all_medicines if m.status == "Out of Stock")
     expired     = sum(1 for m in all_medicines if m.status == "Expired")
 
-    # today's sales from actual Sales table
     today = date.today()
     today_sales = db.query(func.sum(models.Sale.total_amount)).filter(
         func.date(models.Sale.created_at) == today
@@ -227,51 +287,27 @@ def get_dashboard_summary(db: Session) -> dict:
         "expired":          expired,
     }
 
-
 def get_low_stock_items(db: Session) -> list:
-    medicines = db.query(models.Medicine).filter(
-        models.Medicine.quantity < 20
-    ).all()
+    medicines = db.query(models.Medicine).filter(models.Medicine.quantity < 20).all()
     for med in medicines:
         sync_medicine_status(db, med)
     return medicines
 
-
 def get_recent_sales(db: Session, limit: int = 10) -> list:
-    sales = db.query(models.Sale).order_by(
-        models.Sale.created_at.desc()
-    ).limit(limit).all()
-    return sales
-
+    return db.query(models.Sale).order_by(models.Sale.created_at.desc()).limit(limit).all()
 
 def get_purchase_order_summary(db: Session) -> dict:
-    # using low stock + out of stock as proxy for items needing reorder
-    needs_reorder = db.query(models.Medicine).filter(
-        models.Medicine.quantity < 20
-    ).count()
-
-    total_reorder_value = db.query(models.Medicine).filter(
-        models.Medicine.quantity < 20
-    ).all()
-
-    # estimate reorder cost — bring everything up to 100 units
-    estimated_cost = sum(
-        (100 - m.quantity) * m.price
-        for m in total_reorder_value
-        if m.quantity < 20
-    )
-
+    needs_reorder = db.query(models.Medicine).filter(models.Medicine.quantity < 20).count()
+    total_reorder_value = db.query(models.Medicine).filter(models.Medicine.quantity < 20).all()
+    estimated_cost = sum((100 - m.quantity) * m.price for m in total_reorder_value if m.quantity < 20)
     return {
         "items_needing_reorder": needs_reorder,
         "estimated_reorder_cost": round(estimated_cost, 2),
-        "pending_orders": 5,  # placeholder until PurchaseOrder model is added
+        "pending_orders": 5,
     }
-
 
 def get_inventory_overview(db: Session) -> dict:
     medicines = db.query(models.Medicine).all()
-
-    # sync all statuses
     for med in medicines:
         sync_medicine_status(db, med)
 
